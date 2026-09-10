@@ -1,0 +1,32 @@
+# Core Web & API
+fastapi>=0.116.1
+uvicorn>=0.35.0
+
+# Workflow Orchestration
+inngest>=0.5.6
+
+# Vector Database
+qdrant-client>=1.15.1
+
+# LLM & Embeddings
+openai>=1.107.0
+
+# Document Ingestion & Chunking
+llama-index-core>=0.14.0
+llama-index-readers-file>=0.5.4
+pypdf>=5.0.0
+python-docx>=1.1.0
+
+# Environment & Models
+python-dotenv>=1.1.1
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+
+# UI
+streamlit>=1.42.0
+requests>=2.32.0
+
+# Agentic RAG & Graph Orchestration
+langgraph>=0.2.0
+langchain-core>=0.3.0
+langchain-openai>=0.2.0

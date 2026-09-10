@@ -1,0 +1,29 @@
+[project]
+name = "rag-agent-production-app"
+version = "1.0.0"
+description = "Production-Ready Event-Driven RAG Agent Application with FastAPI, Inngest, Qdrant, and Streamlit"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Praveen", email = "praveen@example.com" }
+]
+dependencies = [
+    "fastapi>=0.116.1",
+    "uvicorn>=0.35.0",
+    "inngest>=0.5.6",
+    "qdrant-client>=1.15.1",
+    "openai>=1.107.0",
+    "llama-index-core>=0.14.0",
+    "llama-index-readers-file>=0.5.4",
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+    "python-dotenv>=1.1.1",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.7.0",
+    "streamlit>=1.42.0",
+    "requests>=2.32.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
