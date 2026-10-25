@@ -7,6 +7,23 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
-/uploads
+.venv/
 .env
+
+# Runtime uploads & local vector database
+/uploads/
+qdrant_storage/
+
+# IDE configurations
+.idea/
+.vscode/
+
+# Database & SQLite files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs & OS metadata
+*.log
+.DS_Store
+Thumbs.db

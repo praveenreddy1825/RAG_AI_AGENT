@@ -41,12 +41,16 @@ class RAGSearchResult(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
 
 
-class RAQQueryResult(BaseModel):
+class RAGQueryResult(BaseModel):
     """RAG model answer generation result."""
     answer: str
     sources: List[str]
     num_contexts: int
     citations: List[Citation] = Field(default_factory=list)
+
+
+# Alias for backward compatibility
+RAQQueryResult = RAGQueryResult
 
 
 class CollectionStats(BaseModel):
@@ -86,7 +90,8 @@ class QueryRequest(BaseModel):
     mode: str = "standard"  # "standard" or "agentic"
 
 
-class IngestionRequest(BaseModel):
-    """API request model for triggering document ingestion."""
-    file_path: str
-    source_id: Optional[str] = None
+CONVERSATIONAL_GREETINGS: set = {
+    "hi", "hello", "hey", "hola", "greetings", "good morning", "good afternoon", "good evening",
+    "hi there", "hello there", "hey there", "who are you", "what can you do", "help", "howdy",
+    "thank you", "thanks", "bye", "goodbye"
+}

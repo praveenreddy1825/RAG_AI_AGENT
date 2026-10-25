@@ -3,37 +3,30 @@ import uuid
 import logging
 import datetime
 from pathlib import Path
-from typing import Optional
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, status
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import inngest
-import inngest.fast_api
+from inngest.fast_api import serve
 from inngest.experimental import ai
-#.\.venv\Scripts\streamlit.exe run streamlit_app.py
 
+from langchain_core.messages import SystemMessage, HumanMessage
 from config import settings
 from custom_types import (
     RAGChunkAndSrc,
     RAGUpsertResult,
     RAGSearchResult,
-    RAQQueryResult,
+    RAGQueryResult,
     QueryRequest,
     CollectionStats,
     AgenticQueryResult,
-    AgentStep,
 )
-from rag_graph import run_agentic_rag
+from rag_graph import run_agentic_rag, get_llm
 from data_loader import (
     load_and_chunk_document,
-    load_and_chunk_pdf,
     embed_texts,
-    get_openai_client,
 )
 from vector_db import QdrantStorage
 
-# Load Environment
-load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("rag_agent.app")
 
@@ -167,10 +160,17 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
         "Provide a clear, detailed, and accurate answer based on the context:"
     )
 
-    adapter = ai.openai.Adapter(
-        auth_key=settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY"),
-        model=settings.OPENAI_LLM_MODEL,
-    )
+    if settings.LLM_PROVIDER == "groq" and settings.GROQ_API_KEY:
+        adapter = ai.openai.Adapter(
+            auth_key=settings.GROQ_API_KEY,
+            model=settings.GROQ_GENERATION_MODEL,
+            base_url="https://api.groq.com/openai/v1",
+        )
+    else:
+        adapter = ai.openai.Adapter(
+            auth_key=settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY"),
+            model=settings.OPENAI_LLM_MODEL,
+        )
 
     #Durable LLM generation via Inngest AI step
     res = await ctx.step.ai.infer(
@@ -195,8 +195,8 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     }
 
 
-#Serve Inngest Functions via FastAPI
-inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
+# Serve Inngest Functions via FastAPI
+serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])
 # Synchronous & REST Endpoints
 
 @app.get("/", tags=["System"])
@@ -217,7 +217,9 @@ def health():
         "status": "healthy",
         "vector_db": stats.model_dump(),
         "embedding_model": settings.OPENAI_EMBED_MODEL,
-        "llm_model": settings.OPENAI_LLM_MODEL,
+        "llm_provider": settings.LLM_PROVIDER,
+        "generator_model": settings.GROQ_GENERATION_MODEL if settings.LLM_PROVIDER == "groq" else settings.OPENAI_LLM_MODEL,
+        "evaluator_model": settings.GROQ_EVALUATION_MODEL if settings.LLM_PROVIDER == "groq" else settings.OPENAI_LLM_MODEL,
     }
 
 @app.get("/api/v1/stats", response_model=CollectionStats, tags=["Vector Store"])
@@ -235,7 +237,7 @@ def delete_document(source_id: str):
     return {"message": f"Successfully deleted '{source_id}'"}
 
 
-@app.post("/api/v1/query", response_model=RAQQueryResult, tags=["RAG"])
+@app.post("/api/v1/query", response_model=RAGQueryResult, tags=["RAG"])
 def query_rag_direct(req: QueryRequest):
     """
     Direct synchronous RAG query endpoint.
@@ -244,10 +246,10 @@ def query_rag_direct(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    #If agentic mode requested, delegate to LangGraph
+    # If agentic mode requested, delegate to LangGraph
     if req.mode.lower() == "agentic":
         res = run_agentic_rag(req.question.strip(), top_k=req.top_k)
-        return RAQQueryResult(
+        return RAGQueryResult(
             answer=res["answer"],
             sources=res["sources"],
             num_contexts=res["num_contexts"],
@@ -263,7 +265,7 @@ def query_rag_direct(req: QueryRequest):
     citations = search_res["citations"]
 
     if not contexts:
-        return RAQQueryResult(
+        return RAGQueryResult(
             answer="No relevant documents found to answer your question.",
             sources=[],
             num_contexts=0,
@@ -278,18 +280,14 @@ def query_rag_direct(req: QueryRequest):
         "Answer:"
     )
 
-    client = get_openai_client()
-    completion = client.chat.completions.create(
-        model=settings.OPENAI_LLM_MODEL,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": "You are a professional RAG assistant."},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    answer = completion.choices[0].message.content.strip()
+    llm = get_llm(role="generator", temperature=0.2)
+    response = llm.invoke([
+        SystemMessage(content="You are a professional RAG assistant."),
+        HumanMessage(content=prompt),
+    ])
+    answer = response.content.strip()
 
-    return RAQQueryResult(
+    return RAGQueryResult(
         answer=answer,
         sources=sources,
         num_contexts=len(contexts),

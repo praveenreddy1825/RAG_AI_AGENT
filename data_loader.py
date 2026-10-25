@@ -1,7 +1,7 @@
 import os
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Optional
 from openai import OpenAI
 from config import settings
 from custom_types import DocumentChunk
@@ -98,7 +98,7 @@ def extract_text_from_plain(path: Path) -> List[str]:
         return []
 
 
-def load_and_chunk_document(file_path: str, source_id: str = None) -> List[DocumentChunk]:      
+def load_and_chunk_document(file_path: str, source_id: Optional[str] = None) -> List[DocumentChunk]:      
 
     path = Path(file_path)
     if not path.exists():
@@ -149,14 +149,28 @@ def load_and_chunk_document(file_path: str, source_id: str = None) -> List[Docum
     return chunks
 
 
-def load_and_chunk_pdf(path: str) -> List[str]:
-    doc_chunks = load_and_chunk_document(path)
-    return [c.text for c in doc_chunks]
+
+_fastembed_model = None
+
+def get_fastembed_model():
+    global _fastembed_model
+    if _fastembed_model is None:
+        from fastembed import TextEmbedding
+        model_name = settings.FASTEMBED_MODEL
+        logger.info(f"Initializing FastEmbed model '{model_name}' (runs locally, 100% free)...")
+        _fastembed_model = TextEmbedding(model_name=model_name)
+    return _fastembed_model
 
 
 def embed_texts(texts: List[str], batch_size: int = 64) -> List[List[float]]:
     if not texts:
         return []
+
+    provider = settings.EMBEDDING_PROVIDER.lower()
+
+    if provider == "fastembed":
+        model = get_fastembed_model()
+        return [vec.tolist() for vec in model.embed(texts, batch_size=batch_size)]
 
     client = get_openai_client()
     embeddings: List[List[float]] = []

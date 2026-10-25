@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -10,9 +11,12 @@ from qdrant_client.models import (
     MatchValue,
 )
 from config import settings
-from custom_types import Citation, CollectionStats
+from custom_types import CollectionStats
 
 logger = logging.getLogger("rag_agent.vector_db")
+
+# Process-level client cache to prevent concurrent file-lock collisions in local storage mode
+_local_client_cache: Dict[str, QdrantClient] = {}
 
 
 class QdrantStorage:
@@ -31,10 +35,17 @@ class QdrantStorage:
         self._ensure_collection()
 
     def _init_client(self, url: Optional[str] = None, path: Optional[str] = None) -> QdrantClient:
+        global _local_client_cache
+
         if self.mode == "local" or path:
-            storage_path = path or settings.QDRANT_STORAGE_PATH
+            storage_path = str(Path(path or settings.QDRANT_STORAGE_PATH).resolve())
+            if storage_path in _local_client_cache:
+                return _local_client_cache[storage_path]
             logger.info(f"Initializing Qdrant in local embedded storage at: {storage_path}")
-            return QdrantClient(path=storage_path)
+            client = QdrantClient(path=storage_path)
+            _local_client_cache[storage_path] = client
+            return client
+
         target_url = url or settings.QDRANT_URL
         api_key = settings.QDRANT_API_KEY if settings.QDRANT_API_KEY else None
 
@@ -49,9 +60,15 @@ class QdrantStorage:
             self.mode = "remote"
             return test_client
         except Exception as e:
-            logger.info(f"Remote Qdrant not reachable ({e}). Falling back to local embedded disk storage: {settings.QDRANT_STORAGE_PATH}")
+            storage_path = str(Path(settings.QDRANT_STORAGE_PATH).resolve())
+            if storage_path in _local_client_cache:
+                return _local_client_cache[storage_path]
+            logger.info(f"Remote Qdrant not reachable ({e}). Falling back to local embedded disk storage: {storage_path}")
             self.mode = "local"
-            return QdrantClient(path=settings.QDRANT_STORAGE_PATH)
+            client = QdrantClient(path=storage_path)
+            _local_client_cache[storage_path] = client
+            return client
+
 
     def _ensure_collection(self):
         try:
@@ -61,30 +78,113 @@ class QdrantStorage:
                     collection_name=self.collection,
                     vectors_config=VectorParams(size=self.dim, distance=Distance.COSINE),
                 )
+            else:
+                info = self.client.get_collection(self.collection)
+                existing_dim = None
+                vectors_cfg = getattr(info.config.params, "vectors", None)
+                if hasattr(vectors_cfg, "size"):
+                    existing_dim = vectors_cfg.size
+                elif isinstance(vectors_cfg, dict) and "" in vectors_cfg:
+                    existing_dim = getattr(vectors_cfg[""], "size", None)
+
+                if existing_dim and existing_dim != self.dim:
+                    logger.warning(
+                        f"Collection '{self.collection}' dimension mismatch (existing={existing_dim}, configured={self.dim}). "
+                        f"Recreating collection for new embedding model..."
+                    )
+                    self.client.delete_collection(self.collection)
+                    self.client.create_collection(
+                        collection_name=self.collection,
+                        vectors_config=VectorParams(size=self.dim, distance=Distance.COSINE),
+                    )
         except Exception as e:
             logger.error(f"Error checking/creating collection '{self.collection}': {e}")
 
-    def upsert(self, ids: List[str], vectors: List[List[float]], payloads: List[Dict[str, Any]]):
-        batch_size = 100
-        total = len(ids)
-        for i in range(0, total, batch_size):
-            batch_ids = ids[i : i + batch_size]
-            batch_vectors = vectors[i : i + batch_size]
-            batch_payloads = payloads[i : i + batch_size]
 
-            points = [
-                PointStruct(
-                    id=batch_ids[j],
-                    vector=batch_vectors[j],
-                    payload=batch_payloads[j],
+    def upsert(self, ids: List[str], vectors: List[List[float]], payloads: List[Dict[str, Any]]):
+        if not ids or not vectors:
+            return
+
+        actual_dim = len(vectors[0])
+        total = len(ids)
+        batch_size = 100
+
+        # Auto-heal: verify collection dimension against incoming vector dimension
+        try:
+            info = self.client.get_collection(self.collection)
+            vectors_cfg = getattr(info.config.params, "vectors", None)
+            coll_dim = getattr(vectors_cfg, "size", None) if hasattr(vectors_cfg, "size") else (
+                getattr(vectors_cfg.get(""), "size", None) if isinstance(vectors_cfg, dict) else None
+            )
+            if coll_dim and coll_dim != actual_dim:
+                logger.warning(
+                    f"Collection '{self.collection}' has dimension {coll_dim}, but incoming vectors have dimension {actual_dim}. "
+                    f"Auto-recreating collection to match new embedding model..."
                 )
-                for j in range(len(batch_ids))
-            ]
-            self.client.upsert(collection_name=self.collection, points=points)
+                self.client.delete_collection(self.collection)
+                self.dim = actual_dim
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=VectorParams(size=actual_dim, distance=Distance.COSINE),
+                )
+        except Exception as e:
+            logger.warning(f"Dimension check pre-upsert: {e}")
+
+        try:
+            for i in range(0, total, batch_size):
+                batch_ids = ids[i : i + batch_size]
+                batch_vectors = vectors[i : i + batch_size]
+                batch_payloads = payloads[i : i + batch_size]
+
+                points = [
+                    PointStruct(
+                        id=batch_ids[j],
+                        vector=batch_vectors[j],
+                        payload=batch_payloads[j],
+                    )
+                    for j in range(len(batch_ids))
+                ]
+                self.client.upsert(collection_name=self.collection, points=points)
+        except Exception as e:
+            if "Vector dimension error" in str(e) or "dimension" in str(e).lower():
+                logger.warning(f"Caught vector dimension error: {e}. Recreating collection with dim={actual_dim}...")
+                self.client.delete_collection(self.collection)
+                self.dim = actual_dim
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=VectorParams(size=actual_dim, distance=Distance.COSINE),
+                )
+                for i in range(0, total, batch_size):
+                    batch_ids = ids[i : i + batch_size]
+                    batch_vectors = vectors[i : i + batch_size]
+                    batch_payloads = payloads[i : i + batch_size]
+                    points = [
+                        PointStruct(id=batch_ids[j], vector=batch_vectors[j], payload=batch_payloads[j])
+                        for j in range(len(batch_ids))
+                    ]
+                    self.client.upsert(collection_name=self.collection, points=points)
+            else:
+                raise
+
         logger.info(f"Successfully upserted {total} vectors into '{self.collection}'.")
 
     def search(self, query_vector: List[float], top_k: int = 5, score_threshold: Optional[float] = None) -> Dict[str, Any]:
         try:
+            actual_dim = len(query_vector)
+            info = self.client.get_collection(self.collection)
+            vectors_cfg = getattr(info.config.params, "vectors", None)
+            coll_dim = getattr(vectors_cfg, "size", None) if hasattr(vectors_cfg, "size") else None
+            if coll_dim and coll_dim != actual_dim:
+                logger.warning(
+                    f"Search vector dim ({actual_dim}) does not match collection dim ({coll_dim}). Recreating collection..."
+                )
+                self.client.delete_collection(self.collection)
+                self.client.create_collection(
+                    collection_name=self.collection,
+                    vectors_config=VectorParams(size=actual_dim, distance=Distance.COSINE),
+                )
+                return {"contexts": [], "sources": [], "citations": []}
+
             # Compatible with both qdrant-client search and query_points
             if hasattr(self.client, "search"):
                 results = self.client.search(

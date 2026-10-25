@@ -1,22 +1,18 @@
+import uuid
 import asyncio
-import os
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
 
 import streamlit as st
 import requests
-from dotenv import load_dotenv
 
 import inngest
+from langchain_core.messages import SystemMessage, HumanMessage
 from config import settings
-from custom_types import DocumentChunk
+from custom_types import CONVERSATIONAL_GREETINGS
 from data_loader import load_and_chunk_document, embed_texts
 from vector_db import QdrantStorage
-from rag_graph import run_agentic_rag
-
-# Load environment
-load_dotenv()
+from rag_graph import run_agentic_rag, get_llm
 
 # Page configuration
 st.set_page_config(
@@ -110,6 +106,77 @@ st.markdown(
         font-weight: 600;
         margin-right: 6px;
     }
+
+    /* Workflow card & timeline */
+    .workflow-timeline-card {
+        padding: 1rem 1.25rem;
+        margin: 0.75rem 0;
+        border-radius: 10px;
+        background: rgba(30, 41, 59, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-left: 4px solid #38bdf8;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        transition: all 0.2s ease;
+    }
+    .workflow-timeline-card:hover {
+        border-color: rgba(255, 255, 255, 0.2);
+        background: rgba(30, 41, 59, 0.65);
+    }
+    .workflow-node-badge {
+        font-family: monospace;
+        font-size: 0.8rem;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        display: inline-block;
+        margin-right: 8px;
+    }
+    .node-retrieve {
+        background: rgba(56, 189, 248, 0.15);
+        color: #38bdf8;
+        border: 1px solid rgba(56, 189, 248, 0.3);
+    }
+    .node-grade {
+        background: rgba(168, 85, 247, 0.15);
+        color: #c084fc;
+        border: 1px solid rgba(168, 85, 247, 0.3);
+    }
+    .node-rewrite {
+        background: rgba(245, 158, 11, 0.15);
+        color: #fbbf24;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+    .node-generate {
+        background: rgba(16, 185, 129, 0.15);
+        color: #34d399;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+    .node-groundedness {
+        background: rgba(99, 102, 241, 0.15);
+        color: #818cf8;
+        border: 1px solid rgba(99, 102, 241, 0.3);
+    }
+    .node-error {
+        background: rgba(239, 68, 68, 0.15);
+        color: #f87171;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    .blueprint-card {
+        padding: 1.25rem;
+        border-radius: 12px;
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        margin-bottom: 1rem;
+    }
+    .step-number {
+        font-weight: 700;
+        color: #94a3b8;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+        letter-spacing: 0.05em;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -122,6 +189,7 @@ def get_inngest_client() -> inngest.Inngest:
     return inngest.Inngest(app_id=settings.INNGEST_APP_NAME, is_production=False)
 
 
+@st.cache_resource
 def get_vector_store() -> QdrantStorage:
     return QdrantStorage()
 
@@ -193,7 +261,30 @@ def wait_for_inngest_output(event_id: str, timeout_s: float = 60.0, poll_interva
 
 def direct_rag_query(question: str, top_k: int) -> dict:
     """Direct query fallback using local Qdrant and OpenAI without needing Inngest Dev Server."""
+    clean_q = question.strip().lower().rstrip("!?.")
     store = get_vector_store()
+    stats = store.get_stats()
+
+    if clean_q in CONVERSATIONAL_GREETINGS:
+        if stats.sources:
+            doc_str = ", ".join(f"`{s}`" for s in stats.sources)
+            greeting_msg = (
+                f"Hello! 👋 I am your RAG AI Assistant.\n\n"
+                f"I currently have access to your indexed document(s): {doc_str}.\n\n"
+                f"What would you like to know or analyze from these documents?"
+            )
+        else:
+            greeting_msg = (
+                "Hello! 👋 I am your RAG AI Assistant.\n\n"
+                "I don't see any uploaded documents yet. Please upload your documents in the **📤 Document Ingestion** tab, and I'll be ready to answer your questions!"
+            )
+        return {
+            "answer": greeting_msg,
+            "sources": stats.sources,
+            "citations": [],
+            "num_contexts": 0,
+        }
+
     query_vec = embed_texts([question])[0]
     search_res = store.search(query_vec, top_k=top_k)
 
@@ -218,17 +309,12 @@ def direct_rag_query(question: str, top_k: int) -> dict:
         "Clear and concise answer:"
     )
 
-    from data_loader import get_openai_client
-    client = get_openai_client()
-    completion = client.chat.completions.create(
-        model=settings.OPENAI_LLM_MODEL,
-        temperature=0.2,
-        messages=[
-            {"role": "system", "content": "You are a precise, grounded RAG assistant."},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    answer = completion.choices[0].message.content.strip()
+    llm = get_llm(role="generator", temperature=0.2)
+    response = llm.invoke([
+        SystemMessage(content="You are a precise, grounded RAG assistant."),
+        HumanMessage(content=prompt),
+    ])
+    answer = response.content.strip()
 
     return {
         "answer": answer,
@@ -240,7 +326,6 @@ def direct_rag_query(question: str, top_k: int) -> dict:
 
 def direct_document_ingest(file_path: Path) -> int:
     """Directly chunks and vectors a document into Qdrant."""
-    import uuid
     doc_chunks = load_and_chunk_document(str(file_path), source_id=file_path.name)
     if not doc_chunks:
         return 0
@@ -317,8 +402,16 @@ with st.sidebar:
         help="Route workflows through Inngest event bus (requires 'npx inngest-cli@latest dev' running)",
     )
 
-    st.caption(f"**LLM:** `{settings.OPENAI_LLM_MODEL}`")
-    st.caption(f"**Embedder:** `{settings.OPENAI_EMBED_MODEL}`")
+    if settings.LLM_PROVIDER == "groq":
+        st.caption(f"**⚡ Provider:** `Groq (Free Tier)`")
+        st.caption(f"**🚀 Generator LLM:** `{settings.GROQ_GENERATION_MODEL}`")
+        st.caption(f"**🔍 Evaluator LLM:** `{settings.GROQ_EVALUATION_MODEL}`")
+    else:
+        st.caption(f"**LLM:** `{settings.OPENAI_LLM_MODEL}`")
+    if settings.EMBEDDING_PROVIDER == "fastembed":
+        st.caption(f"**📦 Embedder:** `FastEmbed (Local / Free)`")
+    else:
+        st.caption(f"**📦 Embedder:** `{settings.OPENAI_EMBED_MODEL}`")
 
 st.markdown(
     f"""
@@ -331,50 +424,46 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-tab_chat, tab_upload, tab_inspector = st.tabs(["💬 Ask & Chat", "📤 Ingest Documents", "🔍 Document Inspector"])
-with tab_chat:
-    # Initialize message history
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+tab_chat, tab_workflow, tab_upload, tab_inspector = st.tabs([
+    "💬 Response & Chat",
+    "🧠 Agent Workflow",
+    "📤 Document Ingestion",
+    "🔍 Document Inspector",
+])
 
-    # Display chat history
+# Initialize session state for messages and workflow history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "workflow_history" not in st.session_state:
+    st.session_state.workflow_history = []
+
+with tab_chat:
+    c_head1, c_head2 = st.columns([6, 1])
+    with c_head1:
+        st.subheader("💬 Ask Your Documents")
+        st.caption("Clean conversational interface. Focused purely on answers with verified context citations.")
+    with c_head2:
+        if st.session_state.messages and st.button("🗑️ Clear", help="Clear conversation history"):
+            st.session_state.messages = []
+            st.rerun()
+
+    # Display chat history (clean response ONLY)
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-            # Render Agent Reasoning Trace if present
-            if "steps" in message and message["steps"]:
-                with st.expander(f"🧠 Agent Reasoning & Reflection Trace ({len(message['steps'])} steps)"):
-                    for s in message["steps"]:
-                        node = s.get("node", "step").upper()
-                        desc = s.get("description", "")
-                        status = s.get("status", "completed")
-                        icon = "✅" if status == "completed" else ("🔄" if node == "REWRITE_QUERY" else "⚠️")
-                        st.markdown(
-                            f"<div class='agent-trace-step'>"
-                            f"<span>{icon}</span> <span class='agent-node-badge'>{node}</span>"
-                            f"<span>{desc}</span>"
-                            f"</div>",
-                            unsafe_allow_html=True,
-                        )
-                        if s.get("details"):
-                            det = s["details"]
-                            if "rewritten_query" in det:
-                                st.caption(f"↳ **Rewritten Query:** `{det['rewritten_query']}`")
-
-            if "rewritten_query" in message and message["rewritten_query"]:
-                st.info(f"💡 **Search Query Refined by Agent:** *\"{message['rewritten_query']}\"*")
-
-            if "citations" in message and message["citations"]:
-                with st.expander(f"📚 Sources & Citations ({len(message['citations'])})"):
-                    for idx, cit in enumerate(message["citations"]):
+            # Compact expandable citations
+            citations = message.get("citations", [])
+            if citations:
+                with st.expander(f"📚 Cited Sources ({len(citations)})", expanded=False):
+                    for idx, cit in enumerate(citations):
                         src = cit.get("source", "Document")
                         score = cit.get("score")
                         score_text = f" • Match: {score*100:.1f}%" if score else ""
-                        st.markdown(
-                            f"**[{idx+1}] {src}**{score_text}\n"
-                            f"> {cit.get('text', '')}\n"
-                        )
+                        st.markdown(f"**[{idx+1}] {src}**{score_text}")
+                        sample_txt = cit.get("text", "").strip()
+                        if sample_txt:
+                            st.caption(f"> {sample_txt[:280]}{'...' if len(sample_txt) > 280 else ''}")
 
     # Chat Input
     prompt_input = st.chat_input("Ask a question about your documents...")
@@ -388,7 +477,7 @@ with tab_chat:
         # Generate assistant response
         with st.chat_message("assistant"):
             spinner_msg = (
-                "🧠 LangGraph Agent reasoning: retrieving, grading relevance, and checking facts..."
+                "🧠 Executing LangGraph CRAG agent: retrieval, relevance grading, and grounded generation..."
                 if is_agentic
                 else "Searching document context and synthesizing answer..."
             )
@@ -416,57 +505,269 @@ with tab_chat:
 
                         answer = output.get("answer", "")
                         citations = output.get("citations", [])
-                        steps = []
+                        steps = [
+                            {
+                                "node": "retrieve",
+                                "status": "completed",
+                                "description": f"Retrieved {len(citations)} candidate chunk(s) from Qdrant vector database.",
+                                "details": {"chunks_found": len(citations)},
+                            },
+                            {
+                                "node": "generate",
+                                "status": "completed",
+                                "description": "Synthesized direct answer using retrieved chunks.",
+                                "details": {},
+                            },
+                        ]
                         rewritten_query = None
 
+                    # 1. Clean Final Response Display
                     st.markdown(answer)
 
-                    # Show Reasoning Trace
-                    if steps:
-                        with st.expander(f"🧠 Agent Reasoning & Reflection Trace ({len(steps)} steps)", expanded=True):
-                            for s in steps:
-                                node = s.get("node", "step").upper()
-                                desc = s.get("description", "")
-                                status = s.get("status", "completed")
-                                icon = "✅" if status == "completed" else ("🔄" if node == "REWRITE_QUERY" else "⚠️")
-                                st.markdown(
-                                    f"<div class='agent-trace-step'>"
-                                    f"<span>{icon}</span> <span class='agent-node-badge'>{node}</span>"
-                                    f"<span>{desc}</span>"
-                                    f"</div>",
-                                    unsafe_allow_html=True,
-                                )
-                                if s.get("details"):
-                                    det = s["details"]
-                                    if "rewritten_query" in det:
-                                        st.caption(f"↳ **Rewritten Query:** `{det['rewritten_query']}`")
-
-                    if rewritten_query:
-                        st.info(f"💡 **Search Query Refined by Agent:** *\"{rewritten_query}\"*")
-
+                    # 2. Compact sources expander
                     if citations:
-                        with st.expander(f"📚 Sources & Citations ({len(citations)})"):
+                        with st.expander(f"📚 Cited Sources ({len(citations)})", expanded=False):
                             for idx, cit in enumerate(citations):
                                 src = cit.get("source", "Document")
                                 score = cit.get("score")
                                 score_text = f" • Match: {score*100:.1f}%" if score else ""
-                                st.markdown(
-                                    f"**[{idx+1}] {src}**{score_text}\n"
-                                    f"> {cit.get('text', '')}\n"
-                                )
+                                st.markdown(f"**[{idx+1}] {src}**{score_text}")
+                                sample_txt = cit.get("text", "").strip()
+                                if sample_txt:
+                                    st.caption(f"> {sample_txt[:280]}{'...' if len(sample_txt) > 280 else ''}")
 
-                    # Record to history
+                    # 3. Notification to inspect workflow in the dedicated tab
+                    st.caption("✨ *Execution trace and reasoning graph are available in the **🧠 Agent Workflow** tab.*")
+
+                    # 4. Save clean response to chat history
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
                         "citations": citations,
+                    })
+
+                    # 5. Record run to workflow history for dedicated inspection
+                    st.session_state.workflow_history.append({
+                        "id": len(st.session_state.workflow_history) + 1,
+                        "timestamp": time.strftime("%H:%M:%S"),
+                        "query": prompt_input,
+                        "mode": "LangGraph Agentic RAG" if is_agentic else "Standard RAG",
+                        "answer": answer,
                         "steps": steps,
+                        "citations": citations,
+                        "sources": output.get("sources", []),
                         "rewritten_query": rewritten_query,
+                        "is_grounded": output.get("is_grounded", True),
+                        "iterations": output.get("iterations", 1),
+                        "num_contexts": output.get("num_contexts", len(citations)),
                     })
                 except Exception as e:
                     error_msg = f"⚠️ Query failed: {str(e)}"
                     st.error(error_msg)
                     st.session_state.messages.append({"role": "assistant", "content": error_msg})
+
+with tab_workflow:
+    st.subheader("🧠 Agent Workflow & Reasoning Studio")
+    st.caption("Inspect multi-stage retrieval, document grading, conditional query reformulation, and hallucination verification.")
+
+    if not st.session_state.workflow_history:
+        st.info("💡 No agent queries executed in this session yet. Run a question in **💬 Response & Chat** to see the live graph execution steps here!")
+        
+        st.markdown("#### 🗺️ Agentic CRAG Architecture & Lifecycle")
+        col_w1, col_w2 = st.columns(2)
+        with col_w1:
+            st.markdown(
+                """
+                <div class="blueprint-card">
+                    <div class="step-number">Step 01 • Vector DB Retrieval</div>
+                    <span class="workflow-node-badge node-retrieve">RETRIEVE</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        Fetches candidate chunks from Qdrant vector storage using fast 384-dimensional dense semantic embeddings.
+                    </p>
+                </div>
+                <div class="blueprint-card">
+                    <div class="step-number">Step 02 • Relevance Grading & Filtering</div>
+                    <span class="workflow-node-badge node-grade">GRADE_DOCUMENTS</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        Evaluator LLM strictly checks whether candidate chunks are topically relevant, filtering out misleading or irrelevant text.
+                    </p>
+                </div>
+                <div class="blueprint-card">
+                    <div class="step-number">Step 03 • Conditional Query Rewriting</div>
+                    <span class="workflow-node-badge node-rewrite">REWRITE_QUERY</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        If retrieved chunks fail relevance criteria, the agent automatically reformulates the search query and re-retrieves context.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        with col_w2:
+            st.markdown(
+                """
+                <div class="blueprint-card">
+                    <div class="step-number">Step 04 • Context-Grounded Generation</div>
+                    <span class="workflow-node-badge node-generate">GENERATE</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        Generator LLM synthesizes an authoritative answer using exclusively the verified relevant document chunks.
+                    </p>
+                </div>
+                <div class="blueprint-card">
+                    <div class="step-number">Step 05 • Hallucination & Fact Check</div>
+                    <span class="workflow-node-badge node-groundedness">CHECK_GROUNDEDNESS</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        Evaluator verifies whether each factual statement in the answer is grounded in source text, looping back to rewrite if hallucination occurs.
+                    </p>
+                </div>
+                <div class="blueprint-card">
+                    <div class="step-number">System Resilience</div>
+                    <span class="workflow-node-badge node-retrieve">DURABLE AGENT</span>
+                    <p style="color: #cbd5e1; font-size: 0.9rem; margin-top: 8px;">
+                        Fully inspectable decision graph with step-by-step state tracking and transparent auditability.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    else:
+        # Show Workflow Runs
+        runs = st.session_state.workflow_history
+        c_sel, c_clr = st.columns([5, 1])
+        with c_sel:
+            run_options = [
+                f"Run #{r['id']} ({r['timestamp']}): \"{r['query'][:55]}{'...' if len(r['query']) > 55 else ''}\""
+                for r in reversed(runs)
+            ]
+            selected_label = st.selectbox("Select Execution Trace to Inspect:", run_options, index=0)
+            selected_id = int(selected_label.split("Run #")[1].split(" ")[0])
+            run = next(r for r in runs if r["id"] == selected_id)
+        with c_clr:
+            if st.button("Clear Traces", help="Clear workflow history"):
+                st.session_state.workflow_history = []
+                st.rerun()
+
+        # Top Metric Row
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Execution Mode", run["mode"])
+        with m2:
+            st.metric("Graph Steps", f"{len(run.get('steps', []))} Nodes")
+        with m3:
+            is_gr = run.get("is_grounded", True)
+            grounded_label = "Grounded & Verified ✅" if is_gr else "Refinement Required ⚠️"
+            st.metric("Fact Groundedness", grounded_label)
+        with m4:
+            has_rewritten = bool(run.get("rewritten_query"))
+            st.metric("Query Rewritten", "Yes 🔄" if has_rewritten else "No (Direct) 🎯")
+
+        # Query Transformation Highlight (if rewritten)
+        if run.get("rewritten_query"):
+            st.markdown(
+                f"""
+                <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 10px; padding: 14px 18px; margin: 14px 0;">
+                    <div style="font-weight: 700; color: #fbbf24; margin-bottom: 6px;">🔄 Query Reformulation Triggered by Agent</div>
+                    <div style="font-size: 0.9rem; color: #cbd5e1; margin-bottom: 4px;"><b>Original Question:</b> <code>{run['query']}</code></div>
+                    <div style="font-size: 0.9rem; color: #38bdf8;"><b>Refined Vector Search Query:</b> <code>{run['rewritten_query']}</code></div>
+                    <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 6px;"><i>The agent determined that initial retrieved chunks were incomplete or ambiguous, prompting semantic query reformulation.</i></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # Timeline of executed steps
+        st.markdown(f"#### 📋 Step-by-Step Execution Graph ({len(run.get('steps', []))} Steps)")
+        
+        badge_class_map = {
+            "retrieve": "node-retrieve",
+            "grade_documents": "node-grade",
+            "rewrite_query": "node-rewrite",
+            "generate": "node-generate",
+            "check_groundedness": "node-groundedness",
+            "agent_error": "node-error",
+        }
+        
+        icon_map = {
+            "retrieve": "🔍",
+            "grade_documents": "⚖️",
+            "rewrite_query": "🔄",
+            "generate": "⚡",
+            "check_groundedness": "🛡️",
+            "agent_error": "⚠️",
+        }
+
+        for idx, s in enumerate(run.get("steps", [])):
+            node_key = s.get("node", "step").lower()
+            node_badge = s.get("node", "step").upper()
+            badge_class = badge_class_map.get(node_key, "node-retrieve")
+            icon = icon_map.get(node_key, "✅")
+            desc = s.get("description", "")
+            details = s.get("details", {})
+            status = s.get("status", "completed")
+
+            st.markdown(
+                f"""
+                <div class="workflow-timeline-card">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
+                        <div>
+                            <span style="font-size: 1.1rem; margin-right: 6px;">{icon}</span>
+                            <span class="workflow-node-badge {badge_class}">{node_badge}</span>
+                            <span style="font-weight: 600; font-size: 0.92rem; color: #e2e8f0;">Step {idx+1}</span>
+                        </div>
+                        <span style="font-size: 0.78rem; text-transform: uppercase; color: #10b981; font-weight: 600;">{status}</span>
+                    </div>
+                    <div style="color: #cbd5e1; font-size: 0.9rem; margin-left: 2rem;">{desc}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # Contextual breakdown for each node
+            if node_key == "retrieve" and details:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption(f"📊 **Chunks Found:** {details.get('chunks_found', 0)}")
+                with c2:
+                    sources = details.get("sources", [])
+                    st.caption(f"📁 **Source Documents:** {', '.join(sources) if sources else 'None'}")
+            elif node_key == "grade_documents" and details:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.caption(f"✅ **Passed Relevance:** {details.get('passed', 0)}")
+                with c2:
+                    st.caption(f"❌ **Filtered Out:** {details.get('total', 0) - details.get('passed', 0)} of {details.get('total', 0)}")
+            elif node_key == "rewrite_query" and details:
+                st.caption(f"↳ **New Search Target:** `{details.get('rewritten_query', '')}`")
+            elif node_key == "check_groundedness" and details:
+                grounded = details.get("grounded", True)
+                status_txt = "All claims verified against source context" if grounded else "Factuality check failed"
+                st.caption(f"🛡️ **Groundedness Verification:** `{status_txt}`")
+
+            if details:
+                with st.expander(f"🔍 Inspect Node Payload ({node_badge})", expanded=False):
+                    st.json(details)
+
+        # Final Answer & Source Attribution Card in Workflow Tab
+        st.markdown("#### 🎯 Synthesized Answer & Context Attribution")
+        with st.container():
+            st.markdown(
+                f"""
+                <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 10px; padding: 1.25rem; margin-top: 8px;">
+                    <div style="font-size: 0.85rem; color: #94a3b8; font-weight: 600; margin-bottom: 8px;">FINAL GENERATED OUTPUT</div>
+                    <div style="color: #f1f5f9; line-height: 1.6;">{run.get('answer', '')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        citations = run.get("citations", [])
+        if citations:
+            with st.expander(f"📚 Full Source Attribution & Context Chunks ({len(citations)})", expanded=False):
+                for idx, cit in enumerate(citations):
+                    src = cit.get("source", "Document")
+                    score = cit.get("score")
+                    score_text = f" • Similarity: {score*100:.1f}%" if score else ""
+                    st.markdown(f"**[{idx+1}] {src}**{score_text}")
+                    st.text(cit.get("text", ""))
 with tab_upload:
     st.subheader("Upload Documents to Ingest")
     st.caption("Supports **PDF** (`.pdf`), **Word** (`.docx`), **Markdown** (`.md`), and **Plain Text** (`.txt`).")

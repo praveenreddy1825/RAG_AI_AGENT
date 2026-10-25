@@ -11,11 +11,23 @@ class Settings:
     BASE_DIR: Path = Path(__file__).resolve().parent
     UPLOADS_DIR: Path = BASE_DIR / "uploads"
     
-    # OpenAI Settings
+    # Embedding Settings
+    # Provider can be 'fastembed' (100% Free, runs locally, no API key required) or 'openai'
+    EMBEDDING_PROVIDER: str = os.getenv("EMBEDDING_PROVIDER", "fastembed").lower()
+    FASTEMBED_MODEL: str = os.getenv("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5")
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
     OPENAI_LLM_MODEL: str = os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini")
     OPENAI_EMBED_MODEL: str = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-large")
-    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "3072"))
+    EMBEDDING_DIM: int = int(os.getenv("EMBEDDING_DIM", "384" if os.getenv("EMBEDDING_PROVIDER", "fastembed").lower() == "fastembed" else "3072"))
+
+    
+    # LLM Provider & Multi-Model Settings
+    # Provider can be 'groq' (Free tier, ultra-fast) or 'openai'
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq").lower()
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_GENERATION_MODEL: str = os.getenv("GROQ_GENERATION_MODEL", "openai/gpt-oss-120b")
+    GROQ_EVALUATION_MODEL: str = os.getenv("GROQ_EVALUATION_MODEL", "qwen/qwen3.8-27b")
+
     
     # Qdrant Vector Store Settings
     # Mode can be 'auto', 'local', or 'remote'
@@ -32,11 +44,9 @@ class Settings:
     
     # Inngest Workflow Settings
     INNGEST_APP_NAME: str = os.getenv("INNGEST_APP_NAME", "rag_agent_app")
-    INNGEST_DEV_SERVER_URL: str = os.getenv("INNGEST_DEV_SERVER_URL", "http://127.0.0.1:8288")
     INNGEST_API_BASE: str = os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
 
     # LangGraph Agentic RAG Settings
-    AGENTIC_RAG_ENABLED: bool = os.getenv("AGENTIC_RAG_ENABLED", "true").lower() in ("true", "1", "yes")
-    AGENTIC_RAG_MAX_LOOPS: int = int(os.getenv("AGENTIC_RAG_MAX_LOOPS", "2"))
+    AGENTIC_RAG_MAX_LOOPS: int = int(os.getenv("AGENTIC_RAG_MAX_LOOPS", "1"))
 
 settings = Settings()

@@ -123,8 +123,13 @@ Open `.env` and configure your OpenAI API key:
 ```ini
 OPENAI_API_KEY=sk-proj-your-openai-api-key-here
 QDRANT_MODE=local
-OPENAI_LLM_MODEL=gpt-4o-mini
 OPENAI_EMBED_MODEL=text-embedding-3-large
+
+# Groq Multi-Model (Free Tier)
+LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_your_groq_api_key_here
+GROQ_GENERATION_MODEL=openai/gpt-oss-120b
+GROQ_EVALUATION_MODEL=openai/gpt-oss-20b
 ```
 
 ---
@@ -136,8 +141,9 @@ OPENAI_EMBED_MODEL=text-embedding-3-large
 You can launch the full interactive web UI immediately:
 
 ```bash
-streamlit run streamlit_app.py
+uv run streamlit run streamlit_app.py
 ```
+*(Or if using the activated virtual environment: `streamlit run streamlit_app.py`)*
 
 - Open [http://localhost:8501](http://localhost:8501) in your browser.
 - Go to the **"Ingest Documents"** tab to drag and drop your PDFs, Word documents, or text files.
@@ -151,7 +157,7 @@ For complete event-driven background processing and REST API support:
 
 1. **Start the FastAPI Backend**:
    ```bash
-   uvicorn main:app --reload --port 8000
+   uv run uvicorn main:app --reload --port 8000
    ```
    API Swagger Docs will be available at [http://localhost:8000/docs](http://localhost:8000/docs).
 
@@ -163,7 +169,7 @@ For complete event-driven background processing and REST API support:
 
 3. **Start the Streamlit Frontend**:
    ```bash
-   streamlit run streamlit_app.py
+   uv run streamlit run streamlit_app.py
    ```
    Enable the **"Use Inngest Dev Server"** toggle in the sidebar to route queries through the distributed event bus.
 

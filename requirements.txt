@@ -6,7 +6,7 @@ uvicorn>=0.35.0
 inngest>=0.5.6
 
 # Vector Database
-qdrant-client>=1.15.1
+qdrant-client>=1.19.0
 
 # LLM & Embeddings
 openai>=1.107.0
@@ -30,3 +30,6 @@ requests>=2.32.0
 langgraph>=0.2.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
+langchain-groq>=0.2.0
+fastembed>=0.9.0
+
