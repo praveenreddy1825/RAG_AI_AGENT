@@ -808,10 +808,17 @@ with tab_upload:
         accept_multiple_files=True,
     )
 
+    make_public = st.checkbox(
+        "🌐 Make Public / Demo Document (Visible to Guests and All Users)",
+        value=(current_user_id == "guest"),
+        help="If checked, this document is added to the shared public library so any guest or user can ask questions about it.",
+    )
+
     if uploaded_files:
         if st.button("🚀 Process & Index Documents", type="primary"):
             progress_bar = st.progress(0.0)
             total = len(uploaded_files)
+            target_user_id = "public" if make_public else current_user_id
 
             for i, up_file in enumerate(uploaded_files):
                 with st.status(f"Ingesting '{up_file.name}'...", expanded=True) as status:
@@ -824,7 +831,7 @@ with tab_upload:
                         status.update(label=f"Ingestion event sent for '{up_file.name}'!", state="complete")
                     else:
                         st.write("Parsing, splitting sentences, and embedding vectors...")
-                        count = direct_document_ingest(saved_path, user_id=current_user_id)
+                        count = direct_document_ingest(saved_path, user_id=target_user_id)
                         status.update(label=f"Successfully indexed '{up_file.name}' ({count} chunks)!", state="complete")
 
                     progress_bar.progress((i + 1) / total)
