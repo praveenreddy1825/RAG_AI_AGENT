@@ -63,6 +63,13 @@ def sync_vectors(cloud_url: str, cloud_api_key: str, collection_name: str = None
     else:
         print(f"ℹ️ Cloud collection '{collection}' already exists.")
 
+    # Ensure payload keyword indices exist in Cloud
+    for field in ["user_id", "source_id"]:
+        try:
+            cloud_client.create_payload_index(collection, field, "keyword")
+        except Exception:
+            pass
+
     # 4. Scroll local points and batch upload to Cloud
     print("\n⏳ Transferring vectors and metadata payloads...")
     batch_size = 100

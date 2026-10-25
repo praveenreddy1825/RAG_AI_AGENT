@@ -97,6 +97,17 @@ class QdrantStorage:
                         collection_name=self.collection,
                         vectors_config=VectorParams(size=self.dim, distance=Distance.COSINE),
                     )
+
+            # Ensure payload keyword indices exist for filter performance & remote Qdrant support
+            for field in ["user_id", "source_id"]:
+                try:
+                    self.client.create_payload_index(
+                        collection_name=self.collection,
+                        field_name=field,
+                        field_schema="keyword",
+                    )
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Error checking/creating collection '{self.collection}': {e}")
 
