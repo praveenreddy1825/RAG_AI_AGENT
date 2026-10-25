@@ -2,6 +2,7 @@ import uuid
 import asyncio
 import time
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
 import requests
@@ -358,7 +359,9 @@ if "user" not in st.session_state:
     render_auth_ui()
     st.stop()
 
-current_user = st.session_state["user"]
+current_user = st.session_state.get("user")
+if not current_user:
+    st.stop()
 current_user_id = current_user.get("username", "guest")
 
 with st.sidebar:

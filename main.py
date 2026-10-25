@@ -3,6 +3,7 @@ import uuid
 import logging
 import datetime
 from pathlib import Path
+from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import inngest
