@@ -40,13 +40,17 @@ def get_llm(role: str = "generator", temperature: float = 0.0):
     if provider == "groq":
         api_key = settings.GROQ_API_KEY
         if not api_key:
-            logger.warning("GROQ_API_KEY is not configured. Falling back to OpenAI if available.")
+            logger.warning("GROQ_API_KEY is not configured. Checking OpenAI fallback...")
             if settings.OPENAI_API_KEY:
                 return ChatOpenAI(
                     api_key=settings.OPENAI_API_KEY,
                     model=settings.OPENAI_LLM_MODEL,
                     temperature=temperature,
                 )
+            raise ValueError(
+                "GROQ_API_KEY is not configured or is empty. "
+                "Please configure GROQ_API_KEY in your Streamlit Cloud Secrets (Settings -> Secrets)."
+            )
         from langchain_groq import ChatGroq
         model_name = settings.GROQ_GENERATION_MODEL if role == "generator" else settings.GROQ_EVALUATION_MODEL
         logger.info(f"[Groq LLM] Initializing role='{role}' with model='{model_name}' (temp={temperature})")

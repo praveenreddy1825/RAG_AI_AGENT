@@ -387,10 +387,19 @@ with st.sidebar:
     stats = get_vector_store().get_stats(user_id=current_user_id)
     mode_label = "Local Disk" if stats.mode == "local" else "Remote Server"
     
+    groq_badge = (
+        f'<span class="status-badge online">🤖 Groq Active ({settings.GROQ_API_KEY[:6]}...)</span>'
+        if settings.GROQ_API_KEY
+        else '<span class="status-badge" style="background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">⚠️ GROQ_API_KEY Missing</span>'
+    )
+    
     st.markdown(
         f"""
-        <span class="status-badge online">● System Active</span>
-        <span class="status-badge local">📦 {mode_label}</span>
+        <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+            <span class="status-badge online">● System Active</span>
+            <span class="status-badge local">📦 {mode_label}</span>
+            {groq_badge}
+        </div>
         """,
         unsafe_allow_html=True,
     )
