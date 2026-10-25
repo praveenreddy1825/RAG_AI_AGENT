@@ -22,6 +22,8 @@ qdrant_storage/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.db
+users.db
 
 # Logs & OS metadata
 *.log

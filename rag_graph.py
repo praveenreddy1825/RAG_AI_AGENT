@@ -12,7 +12,7 @@ from data_loader import embed_texts
 
 logger = logging.getLogger("rag_agent.graph")
 
-class GraphState(TypedDict):
+class GraphState(TypedDict, total=False):
     """Represents the shared mutable state across the Agentic RAG graph nodes."""
     question: str                        
     original_question: str                
@@ -22,7 +22,8 @@ class GraphState(TypedDict):
     generation: str                       
     steps: List[Dict[str, Any]]           
     loop_count: int                       
-    is_grounded: bool                    
+    is_grounded: bool
+    user_id: Optional[str]                    
 
 def get_llm(role: str = "generator", temperature: float = 0.0):
     """
@@ -69,14 +70,16 @@ def get_llm(role: str = "generator", temperature: float = 0.0):
 def retrieve_node(state: GraphState) -> Dict[str, Any]:
     query = state["question"]
     top_k = state.get("top_k", settings.DEFAULT_TOP_K)
+    user_id = state.get("user_id")
     steps = list(state.get("steps", []))
 
-    logger.info(f"[LangGraph: Retrieve] Searching Qdrant for: '{query}' (top_k={top_k})")
+    user_label = f" (user={user_id})" if user_id else ""
+    logger.info(f"[LangGraph: Retrieve] Searching Qdrant for: '{query}' (top_k={top_k}{user_label})")
     
     try:
         query_vec = embed_texts([query])[0]
         store = QdrantStorage()
-        results = store.search(query_vec, top_k=top_k)
+        results = store.search(query_vec, top_k=top_k, user_id=user_id)
         citations = results.get("citations", [])
     except Exception as e:
         logger.error(f"[LangGraph: Retrieve] Search failed: {e}")
@@ -448,7 +451,7 @@ def is_conversational_greeting(query: str) -> bool:
     return False
 
 
-def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
+def run_agentic_rag(question: str, top_k: int = 5, user_id: Optional[str] = None) -> Dict[str, Any]:
     raw_question = question or ""
     clean_q = raw_question.strip().lower().rstrip("!?.")
 
@@ -468,6 +471,7 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
             "rewritten_query": None,
             "is_grounded": True,
             "iterations": 1,
+            "user_id": user_id,
         }
 
     # Guard 2: Enforce query length limits to prevent token-flooding denial of service
@@ -478,7 +482,7 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
     if is_conversational_greeting(clean_q):
         try:
             store = QdrantStorage()
-            sources = store.list_sources()
+            sources = store.list_sources(user_id=user_id)
         except Exception:
             sources = []
 
@@ -506,13 +510,14 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
                     "node": "conversational_intent",
                     "status": "completed",
                     "description": f"Identified conversational greeting ('{question}'). Returned instant interactive response.",
-                    "details": {"query": question, "indexed_documents": sources},
+                    "details": {"query": question, "indexed_documents": sources, "user_id": user_id},
                 }
             ],
             "original_question": question,
             "rewritten_query": None,
             "is_grounded": True,
             "iterations": 1,
+            "user_id": user_id,
         }
 
     graph = get_rag_graph()
@@ -527,6 +532,7 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
         "steps": [],
         "loop_count": 0,
         "is_grounded": True,
+        "user_id": user_id,
     }
 
     try:
@@ -562,6 +568,7 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
             "rewritten_query": None,
             "is_grounded": False,
             "iterations": 1,
+            "user_id": user_id,
         }
 
     used_docs = final_state.get("graded_documents") or final_state.get("documents") or []
@@ -580,4 +587,5 @@ def run_agentic_rag(question: str, top_k: int = 5) -> Dict[str, Any]:
         "rewritten_query": rewritten if has_rewritten else None,
         "is_grounded": final_state.get("is_grounded", True),
         "iterations": final_state.get("loop_count", 0) + 1,
+        "user_id": user_id,
     }

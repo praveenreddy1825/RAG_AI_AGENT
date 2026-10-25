@@ -101,9 +101,14 @@ class QdrantStorage:
             logger.error(f"Error checking/creating collection '{self.collection}': {e}")
 
 
-    def upsert(self, ids: List[str], vectors: List[List[float]], payloads: List[Dict[str, Any]]):
+    def upsert(self, ids: List[str], vectors: List[List[float]], payloads: List[Dict[str, Any]], user_id: Optional[str] = None):
         if not ids or not vectors:
             return
+
+        if user_id:
+            for p in payloads:
+                if "user_id" not in p:
+                    p["user_id"] = user_id
 
         actual_dim = len(vectors[0])
         total = len(ids)
@@ -166,9 +171,15 @@ class QdrantStorage:
             else:
                 raise
 
-        logger.info(f"Successfully upserted {total} vectors into '{self.collection}'.")
+        logger.info(f"Successfully upserted {total} vectors into '{self.collection}' (user_id={user_id}).")
 
-    def search(self, query_vector: List[float], top_k: int = 5, score_threshold: Optional[float] = None) -> Dict[str, Any]:
+    def search(
+        self,
+        query_vector: List[float],
+        top_k: int = 5,
+        score_threshold: Optional[float] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         try:
             actual_dim = len(query_vector)
             info = self.client.get_collection(self.collection)
@@ -185,11 +196,22 @@ class QdrantStorage:
                 )
                 return {"contexts": [], "sources": [], "citations": []}
 
+            # Multi-tenant user isolation filter
+            query_filter = None
+            if user_id:
+                query_filter = Filter(
+                    should=[
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value="public")),
+                    ]
+                )
+
             # Compatible with both qdrant-client search and query_points
             if hasattr(self.client, "search"):
                 results = self.client.search(
                     collection_name=self.collection,
                     query_vector=query_vector,
+                    query_filter=query_filter,
                     with_payload=True,
                     limit=top_k,
                     score_threshold=score_threshold,
@@ -198,6 +220,7 @@ class QdrantStorage:
                 query_res = self.client.query_points(
                     collection_name=self.collection,
                     query=query_vector,
+                    query_filter=query_filter,
                     with_payload=True,
                     limit=top_k,
                     score_threshold=score_threshold,
@@ -217,6 +240,7 @@ class QdrantStorage:
             source = payload.get("source", "unknown")
             score = getattr(r, "score", None)
             chunk_index = payload.get("chunk_index", None)
+            point_user_id = payload.get("user_id")
 
             if text:
                 contexts.append(text)
@@ -226,6 +250,7 @@ class QdrantStorage:
                     "source": source,
                     "score": round(float(score), 4) if score is not None else None,
                     "chunk_index": chunk_index,
+                    "user_id": point_user_id,
                 })
 
         return {
@@ -234,11 +259,11 @@ class QdrantStorage:
             "citations": citations,
         }
 
-    def get_stats(self) -> CollectionStats:
+    def get_stats(self, user_id: Optional[str] = None) -> CollectionStats:
         try:
             info = self.client.get_collection(self.collection)
             total_vectors = getattr(info, "points_count", 0) or getattr(info, "vectors_count", 0) or 0
-            sources = self.list_sources()
+            sources = self.list_sources(user_id=user_id)
             return CollectionStats(
                 collection_name=self.collection,
                 status="healthy",
@@ -256,10 +281,20 @@ class QdrantStorage:
                 sources=[],
             )
 
-    def list_sources(self) -> List[str]:
+    def list_sources(self, user_id: Optional[str] = None) -> List[str]:
         try:
+            scroll_filter = None
+            if user_id:
+                scroll_filter = Filter(
+                    should=[
+                        FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                        FieldCondition(key="user_id", match=MatchValue(value="public")),
+                    ]
+                )
+
             scroll_result = self.client.scroll(
                 collection_name=self.collection,
+                scroll_filter=scroll_filter,
                 limit=1000,
                 with_payload=True,
                 with_vectors=False,
@@ -275,20 +310,26 @@ class QdrantStorage:
         except Exception:
             return []
 
-    def delete_source(self, source_id: str) -> bool:
+    def delete_source(self, source_id: str, user_id: Optional[str] = None) -> bool:
         try:
+            conditions = [
+                FieldCondition(
+                    key="source",
+                    match=MatchValue(value=source_id),
+                )
+            ]
+            if user_id:
+                conditions.append(
+                    FieldCondition(
+                        key="user_id",
+                        match=MatchValue(value=user_id),
+                    )
+                )
             self.client.delete(
                 collection_name=self.collection,
-                points_selector=Filter(
-                    must=[
-                        FieldCondition(
-                            key="source",
-                            match=MatchValue(value=source_id),
-                        )
-                    ]
-                ),
+                points_selector=Filter(must=conditions),
             )
-            logger.info(f"Deleted points for source '{source_id}' from '{self.collection}'.")
+            logger.info(f"Deleted points for source '{source_id}' (user_id={user_id}) from '{self.collection}'.")
             return True
         except Exception as e:
             logger.error(f"Failed to delete source '{source_id}': {e}")

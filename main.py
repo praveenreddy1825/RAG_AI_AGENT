@@ -3,7 +3,7 @@ import uuid
 import logging
 import datetime
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import inngest
 from inngest.fast_api import serve
@@ -248,7 +248,7 @@ def query_rag_direct(req: QueryRequest):
 
     # If agentic mode requested, delegate to LangGraph
     if req.mode.lower() == "agentic":
-        res = run_agentic_rag(req.question.strip(), top_k=req.top_k)
+        res = run_agentic_rag(req.question.strip(), top_k=req.top_k, user_id=req.user_id)
         return RAGQueryResult(
             answer=res["answer"],
             sources=res["sources"],
@@ -258,7 +258,7 @@ def query_rag_direct(req: QueryRequest):
 
     store = QdrantStorage()
     query_vec = embed_texts([req.question.strip()])[0]
-    search_res = store.search(query_vec, top_k=req.top_k)
+    search_res = store.search(query_vec, top_k=req.top_k, user_id=req.user_id)
 
     contexts = search_res["contexts"]
     sources = search_res["sources"]
@@ -305,13 +305,13 @@ def query_rag_agentic(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    result = run_agentic_rag(req.question.strip(), top_k=req.top_k)
+    result = run_agentic_rag(req.question.strip(), top_k=req.top_k, user_id=req.user_id)
     return AgenticQueryResult(**result)
 
 
 @app.post("/api/v1/upload", tags=["Document Ingestion"])
-async def upload_and_ingest(file: UploadFile = File(...)):
-    """Uploads and ingests a document directly into the vector database."""
+async def upload_and_ingest(file: UploadFile = File(...), user_id: Optional[str] = Form(None)):
+    """Uploads and ingests a document directly into the vector database with user isolation."""
     settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
     target_path = settings.UPLOADS_DIR / file.filename
 
@@ -325,24 +325,27 @@ async def upload_and_ingest(file: UploadFile = File(...)):
 
     chunks_text = [c.text for c in doc_chunks]
     vecs = embed_texts(chunks_text)
-    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{file.filename}:{i}")) for i in range(len(chunks_text))]
+    user_prefix = f"{user_id}:" if user_id else ""
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_prefix}{file.filename}:{i}")) for i in range(len(chunks_text))]
     payloads = [
         {
             "source": file.filename,
             "text": doc_chunks[i].text,
             "chunk_index": i,
             "file_type": doc_chunks[i].file_type,
+            "user_id": user_id,
             **doc_chunks[i].metadata,
         }
         for i in range(len(doc_chunks))
     ]
 
     store = QdrantStorage()
-    store.upsert(ids, vecs, payloads)
+    store.upsert(ids, vecs, payloads, user_id=user_id)
 
     return {
         "status": "success",
         "file_name": file.filename,
         "chunks_indexed": len(doc_chunks),
         "collection": store.collection,
+        "user_id": user_id,
     }

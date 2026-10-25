@@ -8,6 +8,7 @@ class DocumentChunk(BaseModel):
     source_id: str
     chunk_index: int
     file_type: str
+    user_id: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -17,6 +18,7 @@ class Citation(BaseModel):
     source: str
     score: Optional[float] = None
     chunk_index: Optional[int] = None
+    user_id: Optional[str] = None
 
 
 class RAGChunkAndSrc(BaseModel):
@@ -81,6 +83,7 @@ class AgenticQueryResult(BaseModel):
     rewritten_query: Optional[str] = None
     is_grounded: bool = True
     iterations: int = 1
+    user_id: Optional[str] = None
 
 
 class QueryRequest(BaseModel):
@@ -88,6 +91,7 @@ class QueryRequest(BaseModel):
     question: str
     top_k: int = 5
     mode: str = "standard"  # "standard" or "agentic"
+    user_id: Optional[str] = None
 
 
 CONVERSATIONAL_GREETINGS: set = {

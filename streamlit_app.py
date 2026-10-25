@@ -13,6 +13,7 @@ from custom_types import CONVERSATIONAL_GREETINGS
 from data_loader import load_and_chunk_document, embed_texts
 from vector_db import QdrantStorage
 from rag_graph import run_agentic_rag, get_llm
+from auth import render_auth_ui
 
 # Page configuration
 st.set_page_config(
@@ -259,11 +260,11 @@ def wait_for_inngest_output(event_id: str, timeout_s: float = 60.0, poll_interva
         time.sleep(poll_interval_s)
 
 
-def direct_rag_query(question: str, top_k: int) -> dict:
+def direct_rag_query(question: str, top_k: int, user_id: Optional[str] = None) -> dict:
     """Direct query fallback using local Qdrant and OpenAI without needing Inngest Dev Server."""
     clean_q = question.strip().lower().rstrip("!?.")
     store = get_vector_store()
-    stats = store.get_stats()
+    stats = store.get_stats(user_id=user_id)
 
     if clean_q in CONVERSATIONAL_GREETINGS:
         if stats.sources:
@@ -286,7 +287,7 @@ def direct_rag_query(question: str, top_k: int) -> dict:
         }
 
     query_vec = embed_texts([question])[0]
-    search_res = store.search(query_vec, top_k=top_k)
+    search_res = store.search(query_vec, top_k=top_k, user_id=user_id)
 
     contexts = search_res["contexts"]
     sources = search_res["sources"]
@@ -324,34 +325,63 @@ def direct_rag_query(question: str, top_k: int) -> dict:
     }
 
 
-def direct_document_ingest(file_path: Path) -> int:
-    """Directly chunks and vectors a document into Qdrant."""
+def direct_document_ingest(file_path: Path, user_id: Optional[str] = None) -> int:
+    """Directly chunks and vectors a document into Qdrant for a specific user."""
     doc_chunks = load_and_chunk_document(str(file_path), source_id=file_path.name)
     if not doc_chunks:
         return 0
 
     chunks_text = [c.text for c in doc_chunks]
     vecs = embed_texts(chunks_text)
-    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{file_path.name}:{i}")) for i in range(len(chunks_text))]
+    user_prefix = f"{user_id}:" if user_id else ""
+    ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{user_prefix}{file_path.name}:{i}")) for i in range(len(chunks_text))]
     payloads = [
         {
             "source": file_path.name,
             "text": doc_chunks[i].text,
             "chunk_index": i,
             "file_type": doc_chunks[i].file_type,
+            "user_id": user_id,
             **doc_chunks[i].metadata,
         }
         for i in range(len(doc_chunks))
     ]
     store = get_vector_store()
-    store.upsert(ids, vecs, payloads)
+    store.upsert(ids, vecs, payloads, user_id=user_id)
     return len(doc_chunks)
 
+
+# -------------------------------------------------------------
+# Multi-User Authentication Guard
+# -------------------------------------------------------------
+if "user" not in st.session_state:
+    render_auth_ui()
+    st.stop()
+
+current_user = st.session_state["user"]
+current_user_id = current_user.get("username", "guest")
+
 with st.sidebar:
+    st.markdown(
+        f"""
+        <div style="padding: 12px 14px; background: rgba(30, 41, 59, 0.7); border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 14px;">
+            <div style="font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em;">Current User</div>
+            <div style="font-size: 1.05rem; font-weight: 700; color: #38bdf8; margin: 2px 0;">👤 {current_user['display_name']}</div>
+            <div style="font-size: 0.8rem; color: #cbd5e1;">@{current_user['username']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("🚪 Sign Out", key="btn_signout", use_container_width=True):
+        del st.session_state["user"]
+        st.session_state.messages = []
+        st.session_state.workflow_history = []
+        st.rerun()
+
     st.markdown("### ⚡ System Dashboard")
     
-    # Check Vector Store Stats
-    stats = get_vector_store().get_stats()
+    # Check Vector Store Stats for current user
+    stats = get_vector_store().get_stats(user_id=current_user_id)
     mode_label = "Local Disk" if stats.mode == "local" else "Remote Server"
     
     st.markdown(
@@ -377,7 +407,7 @@ with st.sidebar:
                 st.caption(f"📄 {src}")
             with c2:
                 if st.button("✕", key=f"del_{src}", help=f"Delete {src}"):
-                    get_vector_store().delete_source(src)
+                    get_vector_store().delete_source(src, user_id=current_user_id)
                     st.toast(f"Deleted {src}")
                     st.rerun()
     else:
@@ -489,7 +519,7 @@ with tab_chat:
                             event_id = asyncio.run(send_inngest_query_event(prompt_input, top_k, mode="agentic"))
                             output = wait_for_inngest_output(event_id)
                         else:
-                            output = run_agentic_rag(prompt_input, top_k=top_k)
+                            output = run_agentic_rag(prompt_input, top_k=top_k, user_id=current_user_id)
 
                         answer = output.get("answer", "")
                         citations = output.get("citations", [])
@@ -501,7 +531,7 @@ with tab_chat:
                             event_id = asyncio.run(send_inngest_query_event(prompt_input, top_k, mode="standard"))
                             output = wait_for_inngest_output(event_id)
                         else:
-                            output = direct_rag_query(prompt_input, top_k)
+                            output = direct_rag_query(prompt_input, top_k, user_id=current_user_id)
 
                         answer = output.get("answer", "")
                         citations = output.get("citations", [])
@@ -794,7 +824,7 @@ with tab_upload:
                         status.update(label=f"Ingestion event sent for '{up_file.name}'!", state="complete")
                     else:
                         st.write("Parsing, splitting sentences, and embedding vectors...")
-                        count = direct_document_ingest(saved_path)
+                        count = direct_document_ingest(saved_path, user_id=current_user_id)
                         status.update(label=f"Successfully indexed '{up_file.name}' ({count} chunks)!", state="complete")
 
                     progress_bar.progress((i + 1) / total)
@@ -804,7 +834,7 @@ with tab_upload:
             st.rerun()
 with tab_inspector:
     st.subheader("Inspect Indexed Vectors & Payloads")
-    sources = get_vector_store().list_sources()
+    sources = get_vector_store().list_sources(user_id=current_user_id)
 
     if not sources:
         st.info("No indexed documents found in Qdrant collection.")
